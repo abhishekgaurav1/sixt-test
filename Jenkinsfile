@@ -1,7 +1,7 @@
 node {
     stage ("git pull") {
-        echo "downloding from git repo"
-        
+        git url: "https://github.com/abhishekgaurav1/javaee7-simple-sample.git", credentialsId: '4abb7509-fdc7-40ad-b664-478777cd1c3b'
+     
     }
     stage ("build") {
         echo "do your build step here"
