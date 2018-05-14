@@ -11,6 +11,6 @@ node {
         input message: "Do you want to approve this job to deploy to production?", ok: "OK", submitter: "abhishek"
     }
     stage ("deploy to stage") {
-        echo "deployiong"
+        sh "cp target/javaee7-simple-sample.war ~/apache-tomcat-8.5.31/webapps/test.war"
     }
 }
