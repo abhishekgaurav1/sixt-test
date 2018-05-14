@@ -4,7 +4,7 @@ node {
      
     }
     stage ("build") {
-        sh "mvn clean build"
+        sh "mvn clean install"
         echo "do your build step here"
     }
     stage ("approve for deployment") {
