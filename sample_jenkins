@@ -1,0 +1,126 @@
+def notifyApprove(String email = '') {
+        final def SUBJECT = "${env.JOB_NAME} - Build #${env.BUILD_NUMBER} - Need Approval!"
+        final def CONTENT = "Check console output at ${env.BUILD_URL} to Approve the build."
+        mail to: "${email}", replyTo: "sre@sixt.com", subject: SUBJECT, body: CONTENT
+    }
+
+node {
+    env.war_name = ""
+    env.nexus_url = ""
+    env.release_version = ""
+
+    deleteDir()
+    stage("git pull") {
+        git([ branch: "master", credentialsId: "6f213a89-0412-4a68-b631-b2d22278c38d", url: "<git url>"])
+        dir("entitlementLegoConfig"){
+            git([ branch: "master", credentialsId: "6f213a89-0412-4a68-b631-b2d22278c38d", url: "<git url>"])
+        }
+    }
+
+    stage('build') {
+        sh "cp entitlementLegoConfig/application* src/main/resources/"
+        sh "rm -rf entitlementLegoConfig"
+        sh "mvn clean deploy -Dmaven.test.skip=true"
+    }
+
+    stage("configure version") {
+        env.war_name = sh(returnStdout: true, script: 'cd target && ls *entitlement*.war').trim()
+        sh "echo 'Release_No=${env.war_name} > version-to-build.properties'"
+        env.nexus_url="<nexus url>"+env.war_name.split("nt-")[1].split(".war")[0]+"/"+env.war_name
+	env.release_version = env.war_name.split("nt-")[1].split(".war")[0]
+    }
+
+    stage("create AMI") {
+        dir("packer"){
+            git([ branch: 'junu', credentialsId: '6f213a89-0412-4a68-b631-b2d22278c38d', url: '<git url>'])
+            sh(script: "sed -i -E 's/packer-example/entitlementlego/g' create_ami.json")
+            sh(script: "sed -i -E 's@<nexus_url>@${env.nexus_url}@g' create_ami.json")
+            sh(script: "packer build --var-file /var/creds.json create_ami.json 2>&1 | sudo tee output.txt")
+            env.build_ami_mum=sh (script: "tail output.txt | grep ap-south-1 | awk 'match(\$0, /ami-.*/) { print substr(\$0, RSTART, RLENGTH) }'", returnStdout: true).trim()
+            env.build_ami_vir=sh (script: "tail output.txt | grep us-east-1 | awk 'match(\$0, /ami-.*/) { print substr(\$0, RSTART, RLENGTH) }'", returnStdout: true).trim()
+            print "${env.build_ami_vir}"
+            print "${env.build_ami_mum}"
+        }
+    }
+
+    stage("deploy in QA") {
+        env.stage = "qa"
+        print "deployment steps"
+    }
+
+    stage("QA Automation Testing") {
+       dir("automation") {
+       git([ branch: 'master', credentialsId: '6f213a89-0412-4a68-b631-b2d22278c38d', url: '<git url>'])
+       try {
+       sleep 60
+       sh "mvn clean verify serenity:aggregate -Dmaven.test.failure.ignore=false -Denv.type=qa -Dstory=entitlement"
+       } finally {
+       publishHTML(target: [
+        reportName : 'Serenity',
+        reportDir:   'target/site/serenity',
+        reportFiles: 'index.html',
+        keepAll:     true,
+        alwaysLinkToLastBuild: true,
+        allowMissing: false
+    ])}
+       }
+    }
+
+    stage("approval from QA") {
+        notifyApprove("sre@sixt.com")
+        input message:'Approve deployment to pre-prod?' , submitter: 'abhishek.gaurav@sixt.com'
+        
+        stage ("deploy to pre-prod") {
+            env.stage = "pp"
+            print "deploy to pre-prod"
+            }
+    }
+
+
+    stage("approval for prod") {
+        notifyApprove("sre@sixt.com")
+        input message:'Approve deployment to prod?', submitter: 'sre@sixt.com'
+      try {
+        notifyBuild('STARTED')
+        stage ("deploy Prod") {
+            env.stage = "prod"
+            print "deployment steps"
+        }
+
+     } catch (e) {
+    // If there was an exception thrown, the build failed
+    currentBuild.result = "FAILED"
+    throw e
+    } finally {
+    // Success or failure, always send notifications
+    notifyBuild(currentBuild.result)
+     } 
+    }
+}
+
+
+def notifyBuild(String buildStatus = 'STARTED') {
+  // build status of null means successful
+  buildStatus =  buildStatus ?: 'SUCCESSFUL'
+
+  // Default values
+  def colorName = 'RED'
+  def colorCode = '#FF0000'
+  def subject = "${buildStatus}: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'"
+  def summary = "${subject} (${env.BUILD_URL})"
+
+  // Override default values based on build status
+  if (buildStatus == 'STARTED') {
+    color = 'YELLOW'
+    colorCode = '#FFFF00'
+  } else if (buildStatus == 'SUCCESSFUL') {
+    color = 'GREEN'
+    colorCode = '#00FF00'
+  } else {
+    color = 'RED'
+    colorCode = '#FF0000'
+  }
+
+  // Send notifications
+  slackSend (baseUrl: "https://sixt.slack.com/services/hooks/jenkins-ci/", token: "1Whkhlb2EuqM58UUxdwsWS4P", channel: "#prod-deployments", color: colorCode, message: summary)
+}
